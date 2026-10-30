@@ -116,7 +116,7 @@
                 @{ Result = ($null -ne $odbc18) }
             }
             SetScript = {
-                $odbcUrl = "https://go.microsoft.com/fwlink/?linkid=2249006"
+                $odbcUrl = "https://download.microsoft.com/download/d624e1c6-293b-4d6f-91b8-6e515a5d6a77/amd64/1033/msodbcsql.msi"
                 $odbcPath = "C:\temp\msodbcsql18.msi"
                 New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
