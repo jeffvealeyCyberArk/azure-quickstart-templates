@@ -22,6 +22,7 @@
         [System.Management.Automation.PSCredential]$Admincreds
     )
     Import-DscResource -ModuleName TemplateHelpDSC
+    Import-DscResource -ModuleName PSDesiredStateConfiguration
     
     $LogFolder = "TempLog"
     $CM = "CMCB"
@@ -85,13 +86,57 @@
             DependsOn = "[DownloadAndInstallvcredist]DownloadAndInstallvcredist"
         }
 
+        # Install .NET Framework 4.8
+        Script InstallDotNet48
+        {
+            GetScript = {
+                $release = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" -ErrorAction SilentlyContinue).Release
+                @{ Result = ($release -ge 528040) }
+            }
+            SetScript = {
+                $dotnetUrl = "https://go.microsoft.com/fwlink/?linkid=2088631"
+                $dotnetPath = "C:\temp\ndp48-x86-x64-allos-enu.exe"
+                New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                Invoke-WebRequest -Uri $dotnetUrl -OutFile $dotnetPath -UseBasicParsing
+                Start-Process -FilePath $dotnetPath -ArgumentList "/q /norestart" -Wait
+            }
+            TestScript = {
+                $release = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" -ErrorAction SilentlyContinue).Release
+                return ($release -ge 528040)  # 528040 = .NET 4.8
+            }
+            DependsOn = "[DownloadAndInstallODBC]DownloadAndInstallODBC"
+        }
+
+        # Install latest ODBC Driver 18 for SQL Server
+        Script InstallODBCDriver18
+        {
+            GetScript = {
+                $odbc18 = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+                @{ Result = ($null -ne $odbc18) }
+            }
+            SetScript = {
+                $odbcUrl = "https://go.microsoft.com/fwlink/?linkid=2249006"
+                $odbcPath = "C:\temp\msodbcsql18.msi"
+                New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                Invoke-WebRequest -Uri $odbcUrl -OutFile $odbcPath -UseBasicParsing
+                Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$odbcPath`" /qn IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait
+            }
+            TestScript = {
+                $odbc18 = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+                return ($null -ne $odbc18)
+            }
+            DependsOn = "[Script]InstallDotNet48"
+        }
+
         if($Configuration -eq "Standalone")
         {
             DownloadSCCM DownLoadSCCM
             {
                 CM = $CM
                 Ensure = "Present"
-                DependsOn = "[DownloadAndInstallODBC]DownloadAndInstallODBC"
+                DependsOn = "[Script]InstallODBCDriver18"
             }
 
             SetDNS DnsServerAddress
@@ -133,7 +178,7 @@
             {
                 DNSIPAddress = $DNSIPAddress
                 Ensure = "Present"
-                DependsOn = "[DownloadAndInstallODBC]DownloadAndInstallODBC"
+                DependsOn = "[Script]InstallODBCDriver18"
             }
 
             WaitForConfigurationFile WaitCSJoinDomain
