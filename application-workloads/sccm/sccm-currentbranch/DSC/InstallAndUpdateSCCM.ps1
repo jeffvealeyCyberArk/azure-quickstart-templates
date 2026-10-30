@@ -7,19 +7,16 @@ $ConfigurationFile = Join-Path -Path $ProvisionToolPath -ChildPath "$Role.json"
 $Configuration = Get-Content -Path $ConfigurationFile | ConvertFrom-Json
 
 # ODBC Driver version requirements for SCCM versions
-# Key = SCCM version prefix, Value = Required ODBC version and download URL
+# Using versions hosted in the fork repository
+# IMPORTANT: ODBC 18.7.1.1 has a known issue with CM 2603 and earlier - must be installed AFTER upgrading to 2609
 $ODBCRequirements = @{
-    "2509" = @{
-        Version = "18.1.2.1"
-        Url = "https://download.microsoft.com/download/4/f/e/4fed6f4b-dc42-4255-b82c-88e5a78e5b6e/en-US/18.1.2.1/x64/msodbcsql.msi"
+    "Default" = @{
+        Version = "18.5.2.1"
+        Url = "https://raw.githubusercontent.com/jeffvealeyCyberArk/azure-quickstart-templates/master/application-workloads/sccm/sccm-currentbranch/DSC/msodbcsql1852.msi"
     }
-    "2603" = @{
+    "Post2609" = @{
         Version = "18.7.1.1"
-        Url = "https://download.microsoft.com/download/7/8/f/78f2f4f5-8d26-4c8f-9c18-101c5f118b22/en-US/18.7.1.1/x64/msodbcsql.msi"
-    }
-    "2609" = @{
-        Version = "18.7.1.1"
-        Url = "https://download.microsoft.com/download/7/8/f/78f2f4f5-8d26-4c8f-9c18-101c5f118b22/en-US/18.7.1.1/x64/msodbcsql.msi"
+        Url = "https://raw.githubusercontent.com/jeffvealeyCyberArk/azure-quickstart-templates/master/application-workloads/sccm/sccm-currentbranch/DSC/msodbcsql18711.msi"
     }
 }
 
@@ -57,19 +54,8 @@ function Ensure-ODBCDriverVersion {
         [string]$LogPath
     )
     
-    # Find matching ODBC requirement based on SCCM version prefix
-    $matchedRequirement = $null
-    foreach ($key in $ODBCRequirements.Keys) {
-        if ($SCCMVersion -like "*$key*") {
-            $matchedRequirement = $ODBCRequirements[$key]
-            break
-        }
-    }
-    
-    if ($null -eq $matchedRequirement) {
-        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] No specific ODBC requirement found for SCCM version $SCCMVersion, skipping ODBC check." | Out-File -Append $LogPath
-        return $true
-    }
+    # Find matching ODBC requirement - use Default for all versions
+    $matchedRequirement = $ODBCRequirements["Default"]
     
     $requiredVersion = $matchedRequirement.Version
     $downloadUrl = $matchedRequirement.Url
@@ -90,15 +76,26 @@ function Ensure-ODBCDriverVersion {
     }
     
     # Download and install the required ODBC driver
+    return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
+}
+
+# Function to install/upgrade ODBC driver
+function Install-ODBCDriver {
+    param(
+        [string]$Version,
+        [string]$DownloadUrl,
+        [string]$LogPath
+    )
+    
     try {
-        $odbcPath = "C:\temp\msodbcsql18_$requiredVersion.msi"
+        $odbcPath = "C:\temp\msodbcsql18_$Version.msi"
         New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue | Out-Null
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         
-        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Downloading ODBC Driver $requiredVersion from $downloadUrl..." | Out-File -Append $LogPath
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $odbcPath -UseBasicParsing
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Downloading ODBC Driver $Version from $DownloadUrl..." | Out-File -Append $LogPath
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $odbcPath -UseBasicParsing
         
-        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Installing ODBC Driver $requiredVersion..." | Out-File -Append $LogPath
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Installing ODBC Driver $Version..." | Out-File -Append $LogPath
         $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$odbcPath`" /qn IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait -PassThru
         
         if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
@@ -115,6 +112,30 @@ function Ensure-ODBCDriverVersion {
         "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Error installing ODBC Driver: $_" | Out-File -Append $LogPath
         return $false
     }
+}
+
+# Function to upgrade ODBC driver to 18.7.1.1 AFTER CM 2609 upgrade completes
+# Per Microsoft: ODBC 18.7.1.1 has a known issue with CM 2603 and earlier - must be installed AFTER upgrading to 2609
+function Upgrade-ODBCDriverPost2609 {
+    param(
+        [string]$LogPath
+    )
+    
+    $post2609Requirement = $ODBCRequirements["Post2609"]
+    $requiredVersion = $post2609Requirement.Version
+    $downloadUrl = $post2609Requirement.Url
+    $currentVersion = Get-ODBCDriverVersion
+    
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Post-2609 ODBC upgrade: Upgrading to ODBC Driver $requiredVersion" | Out-File -Append $LogPath
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Current ODBC Driver version: $currentVersion" | Out-File -Append $LogPath
+    
+    if ($null -ne $currentVersion -and (Compare-Versions -Current $currentVersion -Required $requiredVersion) -ge 0) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver version $currentVersion already meets or exceeds $requiredVersion, no upgrade needed." | Out-File -Append $LogPath
+        return $true
+    }
+    
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Upgrading ODBC Driver to $requiredVersion (required after CM 2609)..." | Out-File -Append $LogPath
+    return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
 }
 
 $Configuration.InstallSCCM.Status = 'Running'
@@ -550,6 +571,28 @@ if($upgradingfailed -eq $true)
 else
 {
     $Configuration.UpgradeSCCM.Status = 'Completed'
+    
+    # After all upgrades complete, check if we upgraded to 2609 or later and upgrade ODBC to 18.7.1.1
+    # Per Microsoft: ODBC 18.7.1.1 has a known issue with CM 2603 and earlier - must be installed AFTER upgrading to 2609
+    $currentSite = Get-CMSite | Select-Object -First 1
+    $currentBuildNumber = $currentSite.BuildNumber
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Current CM build number after upgrades: $currentBuildNumber" | Out-File -Append $logpath
+    
+    # Build number for 2609 starts with 5.00.9128 (approximate - adjust if needed)
+    # Check if version contains 2609 indicator or is a recent build
+    if ($currentBuildNumber -ge 9128) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM 2609 or later detected. Upgrading ODBC Driver to 18.7.1.1..." | Out-File -Append $logpath
+        $odbcUpgradeResult = Upgrade-ODBCDriverPost2609 -LogPath $logpath
+        if ($odbcUpgradeResult) {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver upgrade to 18.7.1.1 completed successfully." | Out-File -Append $logpath
+        }
+        else {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] WARNING: ODBC Driver upgrade to 18.7.1.1 may have failed. Please verify manually." | Out-File -Append $logpath
+        }
+    }
+    else {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM version is earlier than 2609 (build $currentBuildNumber). Skipping ODBC 18.7.1.1 upgrade." | Out-File -Append $logpath
+    }
 }
 
 if($downloadretrycount -ge 2)

@@ -108,8 +108,7 @@
             DependsOn = "[DownloadAndInstallODBC]DownloadAndInstallODBC"
         }
 
-        # Install ODBC Driver 18.1.2.1 for SQL Server (required for SCCM 2509 initial install)
-        # Note: This will be upgraded to 18.7.1.1 later by InstallAndUpdateSCCM.ps1 before upgrading to SCCM 2609
+        # Install ODBC Driver 18.5.2.1 for SQL Server (required for SCCM)
         Script InstallODBCDriver18
         {
             GetScript = {
@@ -122,8 +121,8 @@
                 }
             }
             SetScript = {
-                # ODBC Driver 18.1.2.1 - Required for SCCM 2509
-                $odbcUrl = "https://download.microsoft.com/download/4/f/e/4fed6f4b-dc42-4255-b82c-88e5a78e5b6e/en-US/18.1.2.1/x64/msodbcsql.msi"
+                # ODBC Driver 18.5.2.1
+                $odbcUrl = "https://raw.githubusercontent.com/jeffvealeyCyberArk/azure-quickstart-templates/master/application-workloads/sccm/sccm-currentbranch/DSC/msodbcsql1852.msi"
                 $odbcPath = "C:\temp\msodbcsql18.msi"
                 New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
