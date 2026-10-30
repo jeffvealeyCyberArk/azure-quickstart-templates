@@ -8,6 +8,117 @@ $logpath = $ProvisionToolPath+"\InstallSCCMlog.txt"
 $ConfigurationFile = Join-Path -Path $ProvisionToolPath -ChildPath "$Role.json"
 $Configuration = Get-Content -Path $ConfigurationFile | ConvertFrom-Json
 
+# ODBC Driver version requirements for SCCM versions
+# Key = SCCM version prefix, Value = Required ODBC version and download URL
+$ODBCRequirements = @{
+    "2509" = @{
+        Version = "18.1.2.1"
+        Url = "https://download.microsoft.com/download/4/f/e/4fed6f4b-dc42-4255-b82c-88e5a78e5b6e/en-US/18.1.2.1/x64/msodbcsql.msi"
+    }
+    "2603" = @{
+        Version = "18.7.1.1"
+        Url = "https://download.microsoft.com/download/7/8/f/78f2f4f5-8d26-4c8f-9c18-101c5f118b22/en-US/18.7.1.1/x64/msodbcsql.msi"
+    }
+    "2609" = @{
+        Version = "18.7.1.1"
+        Url = "https://download.microsoft.com/download/7/8/f/78f2f4f5-8d26-4c8f-9c18-101c5f118b22/en-US/18.7.1.1/x64/msodbcsql.msi"
+    }
+}
+
+# Function to get current ODBC Driver 18 version
+function Get-ODBCDriverVersion {
+    $odbcPath = "C:\Windows\System32\msodbcsql18.dll"
+    if (Test-Path $odbcPath) {
+        $version = (Get-Item $odbcPath).VersionInfo.FileVersion
+        return $version
+    }
+    return $null
+}
+
+# Function to compare versions
+function Compare-Versions {
+    param([string]$Current, [string]$Required)
+    
+    $currentParts = $Current.Split('.') | ForEach-Object { [int]$_ }
+    $requiredParts = $Required.Split('.') | ForEach-Object { [int]$_ }
+    
+    for ($i = 0; $i -lt [Math]::Max($currentParts.Count, $requiredParts.Count); $i++) {
+        $c = if ($i -lt $currentParts.Count) { $currentParts[$i] } else { 0 }
+        $r = if ($i -lt $requiredParts.Count) { $requiredParts[$i] } else { 0 }
+        
+        if ($c -lt $r) { return -1 }
+        if ($c -gt $r) { return 1 }
+    }
+    return 0
+}
+
+# Function to upgrade ODBC driver if needed for a specific SCCM version
+function Ensure-ODBCDriverVersion {
+    param(
+        [string]$SCCMVersion,
+        [string]$LogPath
+    )
+    
+    # Find matching ODBC requirement based on SCCM version prefix
+    $matchedRequirement = $null
+    foreach ($key in $ODBCRequirements.Keys) {
+        if ($SCCMVersion -like "*$key*") {
+            $matchedRequirement = $ODBCRequirements[$key]
+            break
+        }
+    }
+    
+    if ($null -eq $matchedRequirement) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] No specific ODBC requirement found for SCCM version $SCCMVersion, skipping ODBC check." | Out-File -Append $LogPath
+        return $true
+    }
+    
+    $requiredVersion = $matchedRequirement.Version
+    $downloadUrl = $matchedRequirement.Url
+    $currentVersion = Get-ODBCDriverVersion
+    
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] SCCM version $SCCMVersion requires ODBC Driver version $requiredVersion" | Out-File -Append $LogPath
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Current ODBC Driver version: $currentVersion" | Out-File -Append $LogPath
+    
+    if ($null -eq $currentVersion) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver 18 not found, installing version $requiredVersion..." | Out-File -Append $LogPath
+    }
+    elseif ((Compare-Versions -Current $currentVersion -Required $requiredVersion) -lt 0) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver upgrade required: $currentVersion -> $requiredVersion" | Out-File -Append $LogPath
+    }
+    else {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver version $currentVersion meets requirement ($requiredVersion), no upgrade needed." | Out-File -Append $LogPath
+        return $true
+    }
+    
+    # Download and install the required ODBC driver
+    try {
+        $odbcPath = "C:\temp\msodbcsql18_$requiredVersion.msi"
+        New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue | Out-Null
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Downloading ODBC Driver $requiredVersion from $downloadUrl..." | Out-File -Append $LogPath
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $odbcPath -UseBasicParsing
+        
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Installing ODBC Driver $requiredVersion..." | Out-File -Append $LogPath
+        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$odbcPath`" /qn IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait -PassThru
+        
+        if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
+            $newVersion = Get-ODBCDriverVersion
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver successfully installed/upgraded to version $newVersion" | Out-File -Append $LogPath
+            return $true
+        }
+        else {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver installation failed with exit code: $($process.ExitCode)" | Out-File -Append $LogPath
+            return $false
+        }
+    }
+    catch {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Error installing ODBC Driver: $_" | Out-File -Append $LogPath
+        return $false
+    }
+}
+
 $Configuration.InstallSCCM.Status = 'Running'
 $Configuration.InstallSCCM.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
 $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
@@ -368,6 +479,14 @@ while($updatepack -ne "")
         }
     }
     #trigger prerequisites check after the package downloaded
+    # First, ensure ODBC driver meets requirements for this update
+    $updateName = $updatepack.Name
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Checking ODBC driver requirements for update: $updateName" | Out-File -Append $logpath
+    $odbcResult = Ensure-ODBCDriverVersion -SCCMVersion $updateName -LogPath $logpath
+    if (-not $odbcResult) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] WARNING: ODBC driver upgrade may have failed, proceeding with SCCM update anyway..." | Out-File -Append $logpath
+    }
+    
     Invoke-CMSiteUpdatePrerequisiteCheck -Name $updatepack.Name
     while($updatepack.State -ne 196607 -and $updatepack.State -ne 131074 -and $updatepack.State -ne 131075)
     {

@@ -108,15 +108,22 @@
             DependsOn = "[DownloadAndInstallODBC]DownloadAndInstallODBC"
         }
 
-        # Install latest ODBC Driver 18 for SQL Server
+        # Install ODBC Driver 18.1.2.1 for SQL Server (required for SCCM 2509 initial install)
+        # Note: This will be upgraded to 18.7.1.1 later by InstallAndUpdateSCCM.ps1 before upgrading to SCCM 2609
         Script InstallODBCDriver18
         {
             GetScript = {
                 $odbc18 = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
-                @{ Result = ($null -ne $odbc18) }
+                if ($odbc18) {
+                    $version = $odbc18.DriverODBCVer
+                    @{ Result = "ODBC Driver 18 installed, version: $version" }
+                } else {
+                    @{ Result = "ODBC Driver 18 not installed" }
+                }
             }
             SetScript = {
-                $odbcUrl = "https://download.microsoft.com/download/d624e1c6-293b-4d6f-91b8-6e515a5d6a77/amd64/1033/msodbcsql.msi"
+                # ODBC Driver 18.1.2.1 - Required for SCCM 2509
+                $odbcUrl = "https://download.microsoft.com/download/4/f/e/4fed6f4b-dc42-4255-b82c-88e5a78e5b6e/en-US/18.1.2.1/x64/msodbcsql.msi"
                 $odbcPath = "C:\temp\msodbcsql18.msi"
                 New-Item -ItemType Directory -Path "C:\temp" -Force -ErrorAction SilentlyContinue
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
