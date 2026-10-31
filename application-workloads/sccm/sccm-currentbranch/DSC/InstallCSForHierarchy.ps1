@@ -140,29 +140,55 @@ function Upgrade-ODBCDriverPost2609 {
     return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
 }
 
-$Configuration.InstallSCCM.Status = 'Running'
-$Configuration.InstallSCCM.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
-$Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
-
-$cmpath = "c:\$CM.exe"
-$cmsourceextractpath = "c:\$CM"
-if(!(Test-Path $cmpath))
-{
-    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Copying SCCM installation source..." | Out-File -Append $logpath
-    $cmurl = "https://go.microsoft.com/fwlink/?linkid=2093192"
-    Invoke-WebRequest -Uri $cmurl -OutFile $cmpath
-    if(!(Test-Path $cmsourceextractpath))
-    {
-        New-Item -ItemType Directory -Path $cmsourceextractpath
-        Start-Process -WorkingDirectory ($cmsourceextractpath) -Filepath ($cmpath) -ArgumentList ('/s') -wait
+# Check if SCCM is already installed by looking for the site code in registry
+function Test-SCCMInstalled {
+    try {
+        $siteCode = Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\Microsoft\SMS\Identification' -Name 'Site Code' -ErrorAction SilentlyContinue
+        return ($null -ne $siteCode -and $siteCode -ne "")
+    }
+    catch {
+        return $false
     }
 }
 
-$cmsourcepath = (Get-ChildItem -Path $cmsourceextractpath | ?{$_.Name.ToLower().Contains("cd.")}).FullName
-$CMINIPath = "$cmsourceextractpath\HierarchyCS.ini"
-"[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Check ini file." | Out-File -Append $logpath
+# Check if we need to skip installation (already completed or SCCM already installed)
+$SCCMAlreadyInstalled = Test-SCCMInstalled
+if ($Configuration.InstallSCCM.Status -eq 'Completed' -or $SCCMAlreadyInstalled) {
+    if ($SCCMAlreadyInstalled -and $Configuration.InstallSCCM.Status -ne 'Completed') {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] SCCM already installed (detected via registry). Marking InstallSCCM as Completed." | Out-File -Append $logpath
+        $Configuration.InstallSCCM.Status = 'Completed'
+        $Configuration.InstallSCCM.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+        $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+    }
+    else {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] InstallSCCM already completed. Skipping installation." | Out-File -Append $logpath
+    }
+}
+else {
+    # Proceed with SCCM installation
+    $Configuration.InstallSCCM.Status = 'Running'
+    $Configuration.InstallSCCM.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+    $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
 
-$cmini = @'
+    $cmpath = "c:\$CM.exe"
+    $cmsourceextractpath = "c:\$CM"
+    if(!(Test-Path $cmpath))
+    {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Copying SCCM installation source..." | Out-File -Append $logpath
+        $cmurl = "https://go.microsoft.com/fwlink/?linkid=2093192"
+        Invoke-WebRequest -Uri $cmurl -OutFile $cmpath
+        if(!(Test-Path $cmsourceextractpath))
+        {
+            New-Item -ItemType Directory -Path $cmsourceextractpath
+            Start-Process -WorkingDirectory ($cmsourceextractpath) -Filepath ($cmpath) -ArgumentList ('/s') -wait
+        }
+    }
+
+    $cmsourcepath = (Get-ChildItem -Path $cmsourceextractpath | ?{$_.Name.ToLower().Contains("cd.")}).FullName
+    $CMINIPath = "$cmsourceextractpath\HierarchyCS.ini"
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Check ini file." | Out-File -Append $logpath
+
+    $cmini = @'
 [Identification]
 Action=InstallCAS
 
@@ -197,55 +223,64 @@ SysCenterId=
 
 [HierarchyExpansionOption]
 '@
-$inst = (get-itemproperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server').InstalledInstances[0]
-$p = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL').$inst
+    $inst = (get-itemproperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server').InstalledInstances[0]
+    $p = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL').$inst
 
-$sqlinfo = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$p\$inst"
+    $sqlinfo = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$p\$inst"
 
-"[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ini file exist." | Out-File -Append $logpath
-$cmini = $cmini.Replace('%InstallDir%',$SMSInstallDir)
-$cmini = $cmini.Replace('%MachineFQDN%',"$env:computername.$DomainFullName")
-$cmini = $cmini.Replace('%SQLMachineFQDN%',"$env:computername.$DomainFullName")
-$cmini = $cmini.Replace('%Role%',$Role)
-$cmini = $cmini.Replace('%SQLDataFilePath%',$sqlinfo.DefaultData)
-$cmini = $cmini.Replace('%SQLLogFilePath%',$sqlinfo.DefaultLog)
-$cmini = $cmini.Replace('%CM%',$CM)
-$cmini = $cmini.Replace('%cmsourcepath%',$cmsourcepath)
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ini file exist." | Out-File -Append $logpath
+    $cmini = $cmini.Replace('%InstallDir%',$SMSInstallDir)
+    $cmini = $cmini.Replace('%MachineFQDN%',"$env:computername.$DomainFullName")
+    $cmini = $cmini.Replace('%SQLMachineFQDN%',"$env:computername.$DomainFullName")
+    $cmini = $cmini.Replace('%Role%',$Role)
+    $cmini = $cmini.Replace('%SQLDataFilePath%',$sqlinfo.DefaultData)
+    $cmini = $cmini.Replace('%SQLLogFilePath%',$sqlinfo.DefaultLog)
+    $cmini = $cmini.Replace('%CM%',$CM)
+    $cmini = $cmini.Replace('%cmsourcepath%',$cmsourcepath)
 
-if(!(Test-Path $cmsourcepath\Redist))
-{
-    New-Item $cmsourcepath\Redist -ItemType directory | Out-Null
+    if(!(Test-Path $cmsourcepath\Redist))
+    {
+        New-Item $cmsourcepath\Redist -ItemType directory | Out-Null
+    }
+        
+    if($inst.ToUpper() -eq "MSSQLSERVER")
+    {
+        $cmini = $cmini.Replace('%SQLInstance%',"")
+    }
+    else
+    {
+        $tinstance = $inst.ToUpper() + "\"
+        $cmini = $cmini.Replace('%SQLInstance%',$tinstance)
+    }
+    $CMInstallationFile = "$cmsourcepath\SMSSETUP\BIN\X64\Setup.exe"
+    $cmini > $CMINIPath 
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Installing.." | Out-File -Append $logpath
+    Start-Process -Filepath ($CMInstallationFile) -ArgumentList ('/NOUSERINPUT /script "' + $CMINIPath + '"') -wait
+
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Finished installing CM." | Out-File -Append $logpath
+
+    Remove-Item $CMINIPath
+
+    $Configuration.InstallSCCM.Status = 'Completed'
+    $Configuration.InstallSCCM.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+    $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
 }
-    
-if($inst.ToUpper() -eq "MSSQLSERVER")
-{
-    $cmini = $cmini.Replace('%SQLInstance%',"")
-}
-else
-{
-    $tinstance = $inst.ToUpper() + "\"
-    $cmini = $cmini.Replace('%SQLInstance%',$tinstance)
-}
-$CMInstallationFile = "$cmsourcepath\SMSSETUP\BIN\X64\Setup.exe"
-$cmini > $CMINIPath 
-"[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Installing.." | Out-File -Append $logpath
-Start-Process -Filepath ($CMInstallationFile) -ArgumentList ('/NOUSERINPUT /script "' + $CMINIPath + '"') -wait
 
-"[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Finished installing CM." | Out-File -Append $logpath
-
-Remove-Item $CMINIPath
-
-$Configuration.InstallSCCM.Status = 'Completed'
-$Configuration.InstallSCCM.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
-$Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+# Reload configuration after install section
+$Configuration = Get-Content -Path $ConfigurationFile | ConvertFrom-Json
 
 #Upgrade SCCM
-$Configuration.UpgradeSCCM.Status = 'Running'
-$Configuration.UpgradeSCCM.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
-$Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+# Check if upgrade is already completed
+if ($Configuration.UpgradeSCCM.Status -eq 'Completed') {
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] UpgradeSCCM already completed. Skipping upgrade." | Out-File -Append $logpath
+}
+else {
+    $Configuration.UpgradeSCCM.Status = 'Running'
+    $Configuration.UpgradeSCCM.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+    $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
 
-Start-Sleep -Seconds 120
-$logpath = $ProvisionToolPath+"\UpgradeCMlog.txt"
+    Start-Sleep -Seconds 120
+    $logpath = $ProvisionToolPath+"\UpgradeCMlog.txt"
 $SiteCode =  Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\Microsoft\SMS\Identification' -Name 'Site Code'
 
 $ProviderMachineName = $env:COMPUTERNAME+"."+$DomainFullName # SMS Provider machine name
@@ -330,7 +365,8 @@ $wmiObject.Put()
 
 "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Set the IISSSLState 1216, you could check it manually" | Out-File -Append $logpath
 
-#get the available update
+#get the available update - selects the LOWEST version first to ensure sequential upgrades
+# This ensures updates are applied in order: 2509 -> 2603 -> 2609
 function getupdate()
 {
     "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Get CM update..." | Out-File -Append $logpath
@@ -363,7 +399,10 @@ function getupdate()
     }
     else
     {
-        $updatepack= ($updatepacklist | sort -Property fullversion)[-1] 
+        # Sort by fullversion ASCENDING and select the FIRST (lowest) to ensure sequential upgrades
+        # This ensures we upgrade 2509 -> 2603 -> 2609 in order
+        $updatepack= ($updatepacklist | sort -Property fullversion)[0]
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Multiple updates available. Selecting lowest version first for sequential upgrade: " + $updatepack.Name | Out-File -Append $logpath
     }
     return $updatepack
 }
@@ -598,35 +637,45 @@ Set-Acl $SMSInstallDir $Acl
 $Configuration.UpgradeSCCM.Status = 'Completed'
 $Configuration.UpgradeSCCM.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
 $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+} # End of UpgradeSCCM else block
+
+# Reload configuration
+$Configuration = Get-Content -Path $ConfigurationFile | ConvertFrom-Json
 
 Copy-Item $ConfigurationFile -Destination "c:\$LogFolder" -Force
 
 #Waiting for PS ready to use
-$Configuration.PSReadyToUse.Status = 'Running'
-$Configuration.PSReadyToUse.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
-$Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+# Check if PSReadyToUse is already completed
+if ($Configuration.PSReadyToUse.Status -eq 'Completed') {
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] PSReadyToUse already completed. Skipping." | Out-File -Append $logpath
+}
+else {
+    $Configuration.PSReadyToUse.Status = 'Running'
+    $Configuration.PSReadyToUse.StartTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+    $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
 
-$PSSystemServer = Get-CMSiteSystemServer -SiteCode $PSRole
-while(!$PSSystemServer)
-{
-    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Wait for PS finished installing, will try 60 seconds later..." | Out-File -Append $logpath
-    Start-Sleep -Seconds 60
     $PSSystemServer = Get-CMSiteSystemServer -SiteCode $PSRole
-}
+    while(!$PSSystemServer)
+    {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Wait for PS finished installing, will try 60 seconds later..." | Out-File -Append $logpath
+        Start-Sleep -Seconds 60
+        $PSSystemServer = Get-CMSiteSystemServer -SiteCode $PSRole
+    }
 
-#Wait for replication ready
-$replicationStatus = Get-CMDatabaseReplicationStatus
-
-while($replicationStatus.LinkStatus -ne 2 -or $replicationStatus.Site1ToSite2GlobalState -ne 2 -or $replicationStatus.Site2ToSite1GlobalState -ne 2 -or $replicationStatus.Site2ToSite1SiteState -ne 2 )
-{
-    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Wait for PS ready for use, will try 60 seconds later..." | Out-File -Append $logpath
-    Start-Sleep -Seconds 60
+    #Wait for replication ready
     $replicationStatus = Get-CMDatabaseReplicationStatus
+
+    while($replicationStatus.LinkStatus -ne 2 -or $replicationStatus.Site1ToSite2GlobalState -ne 2 -or $replicationStatus.Site2ToSite1GlobalState -ne 2 -or $replicationStatus.Site2ToSite1SiteState -ne 2 )
+    {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Wait for PS ready for use, will try 60 seconds later..." | Out-File -Append $logpath
+        Start-Sleep -Seconds 60
+        $replicationStatus = Get-CMDatabaseReplicationStatus
+    }
+
+    $Configuration.PSReadyToUse.Status = 'Completed'
+    $Configuration.PSReadyToUse.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
+    $Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
+
+    Copy-Item $ConfigurationFile -Destination "c:\$LogFolder" -Force
 }
-
-$Configuration.PSReadyToUse.Status = 'Completed'
-$Configuration.PSReadyToUse.EndTime = Get-Date -format "yyyy-MM-dd HH:mm:ss"
-$Configuration | ConvertTo-Json | Out-File -FilePath $ConfigurationFile -Force
-
-Copy-Item $ConfigurationFile -Destination "c:\$LogFolder" -Force
 
