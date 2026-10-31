@@ -10,11 +10,18 @@ $Configuration = Get-Content -Path $ConfigurationFile | ConvertFrom-Json
 
 # ODBC Driver version requirements for SCCM versions
 # Using versions hosted in the fork repository
-# IMPORTANT: ODBC 18.7.1.1 has a known issue with CM 2603 and earlier - must be installed AFTER upgrading to 2609
+# Upgrade sequence:
+#   - Initial install: 18.5.2.1
+#   - Before CM 2609: 18.6.2.1 (pre-requisite for 2609)
+#   - After CM 2609: 18.7.1.1
 $ODBCRequirements = @{
     "Default" = @{
         Version = "18.5.2.1"
         Url = "https://raw.githubusercontent.com/jeffvealeyCyberArk/azure-quickstart-templates/master/application-workloads/sccm/sccm-currentbranch/DSC/msodbcsql1852.msi"
+    }
+    "Pre2609" = @{
+        Version = "18.6.2.1"
+        Url = "https://raw.githubusercontent.com/jeffvealeyCyberArk/azure-quickstart-templates/master/application-workloads/sccm/sccm-currentbranch/DSC/msodbcsql18621.msi"
     }
     "Post2609" = @{
         Version = "18.7.1.1"
@@ -56,8 +63,15 @@ function Ensure-ODBCDriverVersion {
         [string]$LogPath
     )
     
-    # Find matching ODBC requirement - use Default for all versions
-    $matchedRequirement = $ODBCRequirements["Default"]
+    # Check if this is a 2609 update - requires ODBC 18.6.2.1 as pre-requisite
+    if ($SCCMVersion -match "2609") {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Detected CM 2609 update - using Pre2609 ODBC requirement (18.6.2.1)" | Out-File -Append $LogPath
+        $matchedRequirement = $ODBCRequirements["Pre2609"]
+    }
+    else {
+        # Use Default for all other versions
+        $matchedRequirement = $ODBCRequirements["Default"]
+    }
     
     $requiredVersion = $matchedRequirement.Version
     $downloadUrl = $matchedRequirement.Url
@@ -137,6 +151,30 @@ function Upgrade-ODBCDriverPost2609 {
     }
     
     "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Upgrading ODBC Driver to $requiredVersion (required after CM 2609)..." | Out-File -Append $LogPath
+    return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
+}
+
+# Function to upgrade ODBC driver to 18.6.2.1 BEFORE CM 2609 upgrade
+# Per Microsoft: ODBC 18.6.2.1 is a pre-requisite for CM 2609
+function Upgrade-ODBCDriverPre2609 {
+    param(
+        [string]$LogPath
+    )
+    
+    $pre2609Requirement = $ODBCRequirements["Pre2609"]
+    $requiredVersion = $pre2609Requirement.Version
+    $downloadUrl = $pre2609Requirement.Url
+    $currentVersion = Get-ODBCDriverVersion
+    
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Pre-2609 ODBC upgrade: Checking if upgrade to ODBC Driver $requiredVersion is needed" | Out-File -Append $LogPath
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Current ODBC Driver version: $currentVersion" | Out-File -Append $LogPath
+    
+    if ($null -ne $currentVersion -and (Compare-Versions -Current $currentVersion -Required $requiredVersion) -ge 0) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] ODBC Driver version $currentVersion already meets or exceeds $requiredVersion, no upgrade needed." | Out-File -Append $LogPath
+        return $true
+    }
+    
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Upgrading ODBC Driver to $requiredVersion (pre-requisite for CM 2609)..." | Out-File -Append $LogPath
     return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
 }
 
