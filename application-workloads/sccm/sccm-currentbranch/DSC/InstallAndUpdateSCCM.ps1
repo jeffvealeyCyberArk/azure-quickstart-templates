@@ -397,17 +397,51 @@ function getupdate()
 
     if($updatepacklist.Count -eq 0)
     {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] No updates available." | Out-File -Append $logpath
     }
     elseif($updatepacklist.Count -eq 1)
     {
         $updatepack= $updatepacklist
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Single update available: " + $updatepack.Name | Out-File -Append $logpath
     }
     else
     {
-        # Sort by fullversion ASCENDING and select the FIRST (lowest) to ensure sequential upgrades
-        # This ensures we upgrade 2509 -> 2603 -> 2609 in order
-        $updatepack= ($updatepacklist | sort -Property fullversion)[0]
-        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Multiple updates available. Selecting lowest version first for sequential upgrade: " + $updatepack.Name | Out-File -Append $logpath
+        # Define the target major versions in upgrade order
+        # We specifically want to upgrade: 2509 -> 2603 -> 2609
+        # Skip hotfixes to speed up the upgrade process
+        $targetVersions = @("2509", "2603", "2609")
+        
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Multiple updates available. Filtering for major versions only (2509, 2603, 2609)..." | Out-File -Append $logpath
+        
+        # Log all available updates for debugging
+        foreach ($update in $updatepacklist) {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")]   Available: $($update.Name) - State: $($update.State) - FullVersion: $($update.FullVersion)" | Out-File -Append $logpath
+        }
+        
+        # Filter to only include target major versions (exclude hotfixes)
+        $majorUpdates = $updatepacklist | Where-Object {
+            $name = $_.Name
+            $isTargetVersion = $false
+            foreach ($ver in $targetVersions) {
+                # Match "Configuration Manager $ver" but not hotfixes
+                if ($name -match "Configuration Manager $ver" -and $name -notmatch "hotfix" -and $name -notmatch "KB\d+") {
+                    $isTargetVersion = $true
+                    break
+                }
+            }
+            $isTargetVersion
+        }
+        
+        if ($majorUpdates.Count -gt 0) {
+            # Sort by fullversion ASCENDING and select the FIRST (lowest) to ensure sequential upgrades
+            $updatepack = ($majorUpdates | Sort-Object -Property fullversion)[0]
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Selected major version update: " + $updatepack.Name | Out-File -Append $logpath
+        }
+        else {
+            # If no major updates found, fall back to lowest version (might be a hotfix we need)
+            $updatepack = ($updatepacklist | Sort-Object -Property fullversion)[0]
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] No major version updates found. Falling back to: " + $updatepack.Name | Out-File -Append $logpath
+        }
     }
     return $updatepack
 }
