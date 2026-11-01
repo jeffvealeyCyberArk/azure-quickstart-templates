@@ -770,6 +770,16 @@ else
     else {
         "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM version is earlier than 2609 (build $currentBuildNumber). Skipping ODBC 18.7.1.1 upgrade." | Out-File -Append $logpath
     }
+    
+    # Final console upgrade to ensure console matches the final site version
+    "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Performing final CM Console upgrade to match site version..." | Out-File -Append $logpath
+    $consoleUpgradeResult = Upgrade-CMConsole -LogPath $logpath
+    if ($consoleUpgradeResult) {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Final CM Console upgrade completed successfully." | Out-File -Append $logpath
+    }
+    else {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] WARNING: Final CM Console upgrade may have failed. Please verify manually." | Out-File -Append $logpath
+    }
 }
 
 if($downloadretrycount -ge 2)
