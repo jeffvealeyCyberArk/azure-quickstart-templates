@@ -180,6 +180,50 @@ function Upgrade-ODBCDriverPre2609 {
     return Install-ODBCDriver -Version $requiredVersion -DownloadUrl $downloadUrl -LogPath $LogPath
 }
 
+# Function to silently upgrade the CM console after a site update
+# This ensures PowerShell cmdlets match the site version and prevents update failures
+function Upgrade-CMConsole {
+    param(
+        [string]$LogPath
+    )
+    
+    try {
+        $CMInstallPath = Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\Microsoft\SMS\Setup' -Name 'Installation Directory' -ErrorAction Stop
+        $ConsoleSetup = Join-Path $CMInstallPath "tools\ConsoleSetup\ConsoleSetup.exe"
+        
+        if (Test-Path $ConsoleSetup) {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Upgrading CM Console silently..." | Out-File -Append $LogPath
+            
+            # Get the site server name
+            $SiteServer = "$env:COMPUTERNAME.$DomainFullName"
+            $ConsoleInstallDir = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole"
+            
+            # Run silent console upgrade
+            $arguments = "/q TargetDir=`"$ConsoleInstallDir`" DefaultSiteServerName=$SiteServer"
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Running: $ConsoleSetup $arguments" | Out-File -Append $LogPath
+            
+            $process = Start-Process -FilePath $ConsoleSetup -ArgumentList $arguments -Wait -PassThru
+            
+            if ($process.ExitCode -eq 0) {
+                "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM Console upgraded successfully." | Out-File -Append $LogPath
+                return $true
+            }
+            else {
+                "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM Console upgrade completed with exit code: $($process.ExitCode)" | Out-File -Append $LogPath
+                return $true  # Continue anyway, non-zero doesn't always mean failure
+            }
+        }
+        else {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Console setup not found at: $ConsoleSetup" | Out-File -Append $LogPath
+            return $false
+        }
+    }
+    catch {
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Error upgrading CM Console: $_" | Out-File -Append $LogPath
+        return $false
+    }
+}
+
 # Check if SCCM is already installed by looking for the site code in registry
 function Test-SCCMInstalled {
     try {
@@ -663,6 +707,23 @@ while($null -ne $updatepack)
             #Wait for copying files finished
             Start-Sleep 600
         }
+        
+        # Upgrade the CM Console to match the new site version
+        # This ensures PowerShell cmdlets work correctly for subsequent updates
+        "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Upgrading CM Console to match site version..." | Out-File -Append $logpath
+        $consoleUpgradeResult = Upgrade-CMConsole -LogPath $logpath
+        if ($consoleUpgradeResult) {
+            "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] CM Console upgrade completed. Reloading CM module..." | Out-File -Append $logpath
+            # Reload the CM module to pick up the new version
+            Remove-Module ConfigurationManager -Force -ErrorAction SilentlyContinue
+            Import-Module "$($ENV:SMS_ADMIN_UI_PATH)\..\ConfigurationManager.psd1" -Force
+            # Reconnect to the site drive
+            if ((Get-PSDrive -Name $SiteCode -PSProvider CMSite -ErrorAction SilentlyContinue) -eq $null) {
+                New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $ProviderMachineName
+            }
+            Set-Location "$($SiteCode):\"
+        }
+        
         #Get if there are any other updates need to be installed
         $updatepack = getupdate 
     }
