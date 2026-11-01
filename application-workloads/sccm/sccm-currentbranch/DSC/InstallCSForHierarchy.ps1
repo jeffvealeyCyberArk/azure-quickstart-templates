@@ -552,7 +552,7 @@ if($originalbuildnumber -eq "")
 #----------------------------------------------------
 $retrytimes = 0
 $updatepack = getupdate
-if($updatepack -ne "")
+if($null -ne $updatepack)
 {
     "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] Update package is " + $updatepack.Name | Out-File -Append $logpath
 }
@@ -560,7 +560,7 @@ else
 {
     "[$(Get-Date -format "MM/dd/yyyy HH:mm:ss")] No update package be found." | Out-File -Append $logpath
 }
-while($updatepack -ne "")
+while($null -ne $updatepack)
 {
     if($retrytimes -eq 3)
     {
