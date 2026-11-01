@@ -33,7 +33,9 @@ $ODBCRequirements = @{
 function Get-ODBCDriverVersion {
     $odbcPath = "C:\Windows\System32\msodbcsql18.dll"
     if (Test-Path $odbcPath) {
-        $version = (Get-Item $odbcPath).VersionInfo.FileVersion
+        # Use ProductVersion which returns the correct format (e.g., "18.5.2.1")
+        # FileVersion and FileMajorPart/FileMinorPart return incorrect values on older drivers
+        $version = (Get-Item $odbcPath).VersionInfo.ProductVersion
         return $version
     }
     return $null
